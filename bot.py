@@ -408,4 +408,3 @@ if not TOKEN:
     logging.error("No bot token found in environment variable DISCORD_BOT_TOKEN!")
 else:
     bot.run(TOKEN)
-bot.run(os.environ["TOKEN"])
