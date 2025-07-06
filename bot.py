@@ -34,8 +34,9 @@ keep_alive()
 
 # Enable intents
 intents = discord.Intents.default()
+intents.members = True
 intents.message_content = True
-intents.members = True  # Needed to fetch members
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 # Create bot instance
 bot = commands.Bot(command_prefix='!', intents=intents)
