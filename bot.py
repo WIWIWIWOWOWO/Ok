@@ -7,10 +7,10 @@ from keep_alive import keep_alive
 
 import discord
 from discord.ext import commands
-from discord import app_commands
+from discord import app_commands, HTTPException
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)  # Change to DEBUG for more detail
 
 # Keep your bot alive (for hosting services like Replit)
 keep_alive()
@@ -122,7 +122,6 @@ class GiveawaySetupModal(discord.ui.Modal, title="Setup Giveaway"):
             )
             return
 
-        # Schedule giveaway task safely
         self.bot.loop.create_task(
             safe_run_giveaway(
                 self.bot,
@@ -198,7 +197,6 @@ class GiveawaySetupView(discord.ui.View):
     async def on_timeout(self):
         for child in self.children:
             child.disabled = True
-        # Optional: store message to edit it on timeout (not implemented here)
 
     @discord.ui.button(label="Setup Giveaway", style=discord.ButtonStyle.green)
     async def setup_giveaway_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -216,13 +214,30 @@ class GiveawaySetupView(discord.ui.View):
 @bot.tree.command(name="giveaway", description="Start an interactive giveaway setup")
 @app_commands.checks.has_permissions(administrator=True)
 async def giveaway(interaction: discord.Interaction):
-    view = GiveawaySetupView(bot, interaction.user.id)
-    await interaction.response.defer(ephemeral=True)
-    await interaction.followup.send(
-        f"{interaction.user.mention}, click below to set up your giveaway!",
-        view=view,
-        ephemeral=True
-    )
+    try:
+        view = GiveawaySetupView(bot, interaction.user.id)
+        await interaction.response.defer(ephemeral=True)
+        await interaction.followup.send(
+            f"{interaction.user.mention}, click below to set up your giveaway!",
+            view=view,
+            ephemeral=True
+        )
+    except HTTPException as e:
+        if e.status == 429:
+            logging.warning(f"Rate-limited on /giveaway command: {e}")
+            try:
+                await interaction.response.send_message(
+                    "❌ I got rate-limited by Discord! Please try again shortly.",
+                    ephemeral=True
+                )
+            except discord.InteractionResponded:
+                await interaction.followup.send(
+                    "❌ I got rate-limited by Discord! Please try again shortly.",
+                    ephemeral=True
+                )
+        else:
+            logging.error(f"HTTPException in /giveaway command: {e}")
+            raise
 
 # ---------- Admin command to post ticket button ----------
 
@@ -236,7 +251,7 @@ async def setup_ticket(ctx):
 # ---------- Simple hello command with cooldown ----------
 
 @bot.command()
-@commands.cooldown(rate=1, per=10, type=commands.BucketType.user)  # 1 use per 10 seconds per user
+@commands.cooldown(rate=1, per=10, type=commands.BucketType.user)
 async def hello(ctx):
     await ctx.send(f'Hello, {ctx.author.name}!')
 
@@ -255,9 +270,31 @@ async def on_ready():
         print(f'Synced {len(synced)} command(s)')
     except Exception as e:
         print(f'Error syncing commands: {e}')
-    # Add persistent views for buttons that never timeout
     bot.add_view(TicketButtonView(bot))
 
+
+# ---------- Global app command error handler ----------
+
+@bot.tree.error
+async def on_app_command_error(interaction, error):
+    if isinstance(error, app_commands.errors.CommandInvokeError):
+        original = error.original
+        if isinstance(original, HTTPException) and original.status == 429:
+            logging.warning(f"Rate-limited on app command: {original}")
+            try:
+                await interaction.response.send_message(
+                    "❌ I was rate-limited by Discord. Please try again in a moment.",
+                    ephemeral=True
+                )
+            except discord.InteractionResponded:
+                await interaction.followup.send(
+                    "❌ I was rate-limited by Discord. Please try again in a moment.",
+                    ephemeral=True
+                )
+            return
+        logging.error(f"Unhandled exception in app command: {original}")
+    else:
+        logging.error(f"Error in app command: {error}")
 
 # ---------- Run bot ----------
 
