@@ -9,6 +9,22 @@ import discord
 from discord.ext import commands
 from discord import app_commands, HTTPException, InteractionResponded
 
+async def discord_api_call_with_retry(coro_func, *args, max_retries=5, **kwargs):
+    retry_delay = 1
+    for attempt in range(max_retries):
+        try:
+            return await coro_func(*args, **kwargs)
+        except discord.HTTPException as e:
+            if e.status == 429:
+                retry_after = e.response.headers.get("Retry-After")
+                delay = float(retry_after) if retry_after else retry_delay
+                logging.warning(f"Rate limited, retrying after {delay}s (attempt {attempt + 1}/{max_retries})")
+                await asyncio.sleep(delay)
+                retry_delay *= 2
+            else:
+                raise
+    raise Exception("Max retries exceeded due to rate limits")
+    
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)  # Change to INFO in production
 
@@ -133,25 +149,19 @@ class GiveawaySetupModal(discord.ui.Modal, title="Setup Giveaway"):
             return
 
         try:
-            giveaway_message = await interaction.channel.send(
+            giveaway_message = await discord_api_call_with_retry(
+                interaction.channel.send,
                 f"🎉 **GIVEAWAY STARTED!** 🎉\n\n"
                 f"**Prize:** {giveaway_name}\n"
                 f"**Winners:** {winners_count}\n"
                 f"**Duration:** {duration_minutes} minutes\n\n"
                 f"React with 🎉 to enter!"
             )
-            await giveaway_message.add_reaction("🎉")
-        except HTTPException as e:
-            if e.status == 429:
-                logging.warning(f"Rate limited when starting giveaway: {e}")
-                await interaction.response.send_message(
-                    "❌ I am being rate limited by Discord. Please try again shortly.",
-                    ephemeral=True
-                )
-                return
-            logging.error(f"Failed to send giveaway message or add reaction: {e}")
+            await discord_api_call_with_retry(giveaway_message.add_reaction, "🎉")
+        except Exception as e:
+            logging.error(f"Failed to send giveaway message or add reaction after retries: {e}")
             await interaction.response.send_message(
-                "❌ Failed to start giveaway due to Discord API error.",
+                "❌ Failed to start giveaway due to Discord API rate limits or errors.",
                 ephemeral=True
             )
             return
