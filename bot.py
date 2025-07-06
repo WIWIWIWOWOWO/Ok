@@ -401,26 +401,13 @@ async def vouches(ctx, member: discord.Member = None):
 
 
 
-# ---------- Actually run the bot ----------
-if __name__ == "__main__":
-    keep_alive()
-
-    TOKEN = os.getenv("DISCORD_BOT_TOKEN") or os.getenv("TOKEN")
-    if not TOKEN:
-        logging.error("❌ No bot token found in environment variables! Please set DISCORD_BOT_TOKEN or TOKEN.")
-    else:
-        try:
-            bot.run(TOKEN)
-        except Exception as e:
-            logging.error(f"❌ Exception when running bot: {e}")
-            # ---------- Event to show when the bot is ready ----------
 @bot.event
 async def on_ready():
-    logging.info(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")
-    try:
-        synced = await bot.tree.sync()
-        logging.info(f"✅ Synced {len(synced)} slash commands.")
-    except Exception as e:
-        logging.error(f"❌ Failed to sync commands: {e}")
-    logging.info("Bot is ready.")
+    print(f"Bot logged in as {bot.user} (ID: {bot.user.id})")
 
+if __name__ == "__main__":
+    TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+    if not TOKEN:
+        print("Error: DISCORD_BOT_TOKEN environment variable not found!")
+    else:
+        bot.run(TOKEN)
