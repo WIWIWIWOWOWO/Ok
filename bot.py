@@ -416,6 +416,11 @@ async def vouch(ctx: commands.Context):
     except discord.Forbidden:
         await ctx.send(f"{ctx.author.mention}, I couldn't DM you. Please enable your DMs and try again.")
 
+@bot.command(name="vouches")
+async def check_vouches(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    count = vouch_counts.get(member.id, 0)
+    await ctx.send(f"📊 {member.display_name} has {count} vouch{'es' if count != 1 else ''}.")
 
 
 # ---------- Event to show when the bot is ready ----------
