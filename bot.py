@@ -38,8 +38,6 @@ intents.members = True
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Create bot instance
-bot = commands.Bot(command_prefix='!', intents=intents)
 
 
 # ---------- Ticket Button ----------
