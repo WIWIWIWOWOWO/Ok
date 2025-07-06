@@ -1,0 +1,13 @@
+{
+  "guild_id": {
+    "giveaway_id": {
+      "channel_id": 123,
+      "message_id": 456,
+      "prize": "Nitro",
+      "ends_at": 99999999,
+      "winners_count": 1,
+      "entries": [789, 101112],
+      "ended": false
+    }
+  }
+}
