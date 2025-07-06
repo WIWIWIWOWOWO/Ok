@@ -359,45 +359,63 @@ async def vouch(ctx: commands.Context):
     """Initiate a DM to vouch someone."""
     try:
         dm = await ctx.author.create_dm()
-        await dm.send("Please reply with the username#discriminator of the person you want to vouch for.")
+        await dm.send(
+            "Please reply with the username, mention, or user ID of the person you want to vouch for.\n"
+            "Examples:\n"
+            "- Username#1234\n"
+            "- Username\n"
+            "- @Mention\n"
+            "- UserID"
+        )
         
         def check(m):
             return m.author == ctx.author and isinstance(m.channel, discord.DMChannel)
         
         msg = await bot.wait_for('message', check=check, timeout=120)
-        target_name = msg.content.strip()
+        target_input = msg.content.strip()
 
         # Ensure we are in a guild context
         if not ctx.guild:
             await dm.send("❌ This command can only be used in a server.")
             return
 
-        if "#" not in target_name:
-            await dm.send("❌ Please provide the username in the format username#1234.")
-            return
+        user = None
 
-        name, discriminator = target_name.split("#", 1)
+        # Try mention format <@123456789012345678> or <@!123456789012345678>
+        import re
+        mention_match = re.match(r"<@!?(\d+)>", target_input)
+        if mention_match:
+            user_id = int(mention_match.group(1))
+            user = ctx.guild.get_member(user_id)
+        elif target_input.isdigit():
+            # Try user ID lookup
+            user = ctx.guild.get_member(int(target_input))
+        elif "#" in target_input:
+            # Old username#discriminator format
+            name, discriminator = target_input.split("#", 1)
+            user = discord.utils.get(ctx.guild.members, name=name, discriminator=discriminator)
+        else:
+            # Just username - find first matching member
+            user = discord.utils.find(lambda m: m.name == target_input, ctx.guild.members)
 
-        # Search member in guild
-        target_member = discord.utils.get(ctx.guild.members, name=name, discriminator=discriminator)
-        
-        if not target_member:
+        if not user:
             await dm.send("❌ Could not find that user in this server. Please make sure you typed it correctly.")
             return
         
-        if target_member.id == ctx.author.id:
+        if user.id == ctx.author.id:
             await dm.send("❌ You cannot vouch yourself.")
             return
 
-        if add_vouch(target_member.id, ctx.author.id):
-            await dm.send(f"✅ You have successfully vouched for {target_member.display_name}.")
-            await ctx.channel.send(f"📢 {ctx.author.mention} has vouched for {target_member.mention}!")
+        if add_vouch(user.id, ctx.author.id):
+            await dm.send(f"✅ You have successfully vouched for {user.display_name}.")
+            await ctx.channel.send(f"📢 {ctx.author.mention} has vouched for {user.mention}!")
         else:
             await dm.send("❌ You have already vouched for this user.")
     except asyncio.TimeoutError:
         await ctx.author.send("⌛ Vouch timed out. Please try again.")
     except discord.Forbidden:
         await ctx.send(f"{ctx.author.mention}, I couldn't DM you. Please enable your DMs and try again.")
+
 
 
 # ---------- Event to show when the bot is ready ----------
