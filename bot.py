@@ -3,24 +3,26 @@ import asyncio
 import random
 import time
 import logging
-
 from keep_alive import keep_alive
 
 import discord
 from discord.ext import commands
 from discord import app_commands
 
+# Set up logging
 logging.basicConfig(level=logging.INFO)
 
+# Keep your bot alive (for hosting services like Replit)
 keep_alive()
 
-# Enable message content intent
+# Enable intents
 intents = discord.Intents.default()
 intents.message_content = True
 
-# Create the bot with a prefix for commands
+# Create bot instance
 bot = commands.Bot(command_prefix='!', intents=intents)
 
+# ---------- Ticket Button ----------
 
 class TicketButtonView(discord.ui.View):
     def __init__(self, bot):
@@ -60,6 +62,7 @@ class TicketButtonView(discord.ui.View):
             ephemeral=True
         )
 
+# ---------- Giveaway Modal & View ----------
 
 class GiveawaySetupModal(discord.ui.Modal, title="Setup Giveaway"):
     def __init__(self, bot, author_id):
@@ -85,7 +88,6 @@ class GiveawaySetupModal(discord.ui.Modal, title="Setup Giveaway"):
 
     async def on_submit(self, interaction: discord.Interaction):
         if interaction.user.id != self.author_id:
-            # Only the user who opened the modal can submit
             await interaction.response.send_message("You are not allowed to submit this modal.", ephemeral=True)
             return
 
@@ -120,7 +122,7 @@ class GiveawaySetupModal(discord.ui.Modal, title="Setup Giveaway"):
             )
             return
 
-        # Schedule the giveaway runner task safely
+        # Schedule giveaway task safely
         self.bot.loop.create_task(
             safe_run_giveaway(
                 self.bot,
@@ -144,10 +146,9 @@ async def safe_run_giveaway(bot, channel, message, emoji, duration_minutes, winn
         await run_giveaway(channel, message, emoji, duration_minutes, winners_count, prize)
     except Exception as e:
         logging.error(f"Exception in giveaway task: {e}")
-        # Try to notify channel about the failure (best effort)
         try:
             await channel.send(f"⚠️ Giveaway **{prize}** encountered an error and was stopped.")
-        except:
+        except Exception:
             pass
 
 
@@ -190,16 +191,14 @@ async def run_giveaway(channel, message, emoji, duration_minutes, winners_count,
 
 class GiveawaySetupView(discord.ui.View):
     def __init__(self, bot, author_id):
-        super().__init__(timeout=300)  # 5-minute timeout
+        super().__init__(timeout=300)
         self.bot = bot
         self.author_id = author_id
 
     async def on_timeout(self):
-        # Disable all buttons when view times out to avoid stale interactions
         for child in self.children:
             child.disabled = True
-        # We do not have an interaction here to update the message but this is best effort
-        # If you want, you can store the original message and edit it here
+        # Optional: store message to edit it on timeout (not implemented here)
 
     @discord.ui.button(label="Setup Giveaway", style=discord.ButtonStyle.green)
     async def setup_giveaway_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -212,14 +211,7 @@ class GiveawaySetupView(discord.ui.View):
 
         await interaction.response.send_modal(GiveawaySetupModal(self.bot, self.author_id))
 
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def setup_ticket(ctx):
-    """Command for admins to post the ticket button message."""
-    view = TicketButtonView(bot)
-    await ctx.send("Click the button below to create your private channel:", view=view)
-
+# ---------- Slash command for giveaway ----------
 
 @bot.tree.command(name="giveaway", description="Start an interactive giveaway setup")
 @app_commands.checks.has_permissions(administrator=True)
@@ -232,11 +224,28 @@ async def giveaway(interaction: discord.Interaction):
         ephemeral=True
     )
 
+# ---------- Admin command to post ticket button ----------
 
 @bot.command()
+@commands.has_permissions(administrator=True)
+async def setup_ticket(ctx):
+    """Command for admins to post the ticket button message."""
+    view = TicketButtonView(bot)
+    await ctx.send("Click the button below to create your private channel:", view=view)
+
+# ---------- Simple hello command with cooldown ----------
+
+@bot.command()
+@commands.cooldown(rate=1, per=10, type=commands.BucketType.user)  # 1 use per 10 seconds per user
 async def hello(ctx):
     await ctx.send(f'Hello, {ctx.author.name}!')
 
+@hello.error
+async def hello_error(ctx, error):
+    if isinstance(error, commands.CommandOnCooldown):
+        await ctx.send(f"Please wait {round(error.retry_after, 1)} seconds before using this command again.")
+
+# ---------- Bot events ----------
 
 @bot.event
 async def on_ready():
@@ -246,8 +255,14 @@ async def on_ready():
         print(f'Synced {len(synced)} command(s)')
     except Exception as e:
         print(f'Error syncing commands: {e}')
+    # Add persistent views for buttons that never timeout
     bot.add_view(TicketButtonView(bot))
 
 
+# ---------- Run bot ----------
+
 TOKEN = os.getenv("DISCORD_TOKEN")
-bot.run(TOKEN)
+if not TOKEN:
+    logging.error("DISCORD_TOKEN environment variable is not set!")
+else:
+    bot.run(TOKEN)
