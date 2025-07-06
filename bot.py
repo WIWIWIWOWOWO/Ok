@@ -7,12 +7,23 @@ import json
 from keep_alive import keep_alive
 
 import discord
-from discord.ext import commands
-from discord import app_commands, HTTPException, InteractionResponded
+from discord.ext import commands, tasks
+from discord import app_commands, HTTPException
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)  # Change to INFO in production
 
+# Keep your bot alive (for hosting services like Replit)
+keep_alive()
+
+# Enable intents
+intents = discord.Intents.default()
+intents.members = True
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+
+# Helper for Discord API calls with retry on rate limit
 async def discord_api_call_with_retry(coro_func, *args, max_retries=5, **kwargs):
     retry_delay = 1
     for attempt in range(max_retries):
@@ -28,16 +39,6 @@ async def discord_api_call_with_retry(coro_func, *args, max_retries=5, **kwargs)
             else:
                 raise
     raise Exception("Max retries exceeded due to rate limits")
-
-# Keep your bot alive (for hosting services like Replit)
-keep_alive()
-
-# Enable intents
-intents = discord.Intents.default()
-intents.members = True
-intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
-
 
 
 # ---------- Ticket Button ----------
@@ -119,199 +120,173 @@ class TicketButtonView(discord.ui.View):
         )
 
 
-# ---------- Giveaway Modal & View ----------
+# ---------- Giveaway System ----------
 
-class GiveawaySetupModal(discord.ui.Modal, title="Setup Giveaway"):
-    def __init__(self, bot, author_id):
-        super().__init__()
-        self.bot = bot
-        self.author_id = author_id
+GIVEAWAY_FILE = "giveaways.json"
+if not os.path.exists(GIVEAWAY_FILE):
+    with open(GIVEAWAY_FILE, "w") as f:
+        json.dump({}, f)
 
-        self.add_item(discord.ui.TextInput(
-            label="Giveaway Name",
-            placeholder="Example: Nitro Giveaway",
-            max_length=100
-        ))
-        self.add_item(discord.ui.TextInput(
-            label="Number of Winners",
-            placeholder="1",
-            max_length=2
-        ))
-        self.add_item(discord.ui.TextInput(
-            label="Duration (minutes)",
-            placeholder="e.g., 10",
-            max_length=4
-        ))
+def load_giveaways():
+    with open(GIVEAWAY_FILE) as f:
+        return json.load(f)
 
-    async def on_submit(self, interaction: discord.Interaction):
-        if interaction.user.id != self.author_id:
-            await interaction.response.send_message("You are not allowed to submit this modal.", ephemeral=True)
-            return
+def save_giveaways(data):
+    with open(GIVEAWAY_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
-        giveaway_name = self.children[0].value
-        winners_count = self.children[1].value
-        duration_minutes = self.children[2].value
-
-        try:
-            winners_count = int(winners_count)
-            duration_minutes = int(duration_minutes)
-        except ValueError:
-            await interaction.response.send_message(
-                "❌ Invalid number for winners or duration. Please use integers.",
-                ephemeral=True
-            )
-            return
-
-        try:
-            giveaway_message = await interaction.channel.send(
-                f"🎉 **GIVEAWAY STARTED!** 🎉\n\n"
-                f"**Prize:** {giveaway_name}\n"
-                f"**Winners:** {winners_count}\n"
-                f"**Duration:** {duration_minutes} minutes\n\n"
-                f"React with 🎉 to enter!"
-            )
-            await giveaway_message.add_reaction("🎉")
-        except HTTPException as e:
-            if e.status == 429:
-                logging.warning(f"Rate limited when starting giveaway: {e}")
-                await interaction.response.send_message(
-                    "❌ I am being rate limited by Discord. Please try again shortly.",
-                    ephemeral=True
-                )
-                return
-            logging.error(f"Failed to send giveaway message or add reaction: {e}")
-            await interaction.response.send_message(
-                "❌ Failed to start giveaway due to Discord API error.",
-                ephemeral=True
-            )
-            return
-
-        self.bot.loop.create_task(
-            safe_run_giveaway(
-                self.bot,
-                interaction.channel,
-                giveaway_message,
-                "🎉",
-                duration_minutes,
-                winners_count,
-                giveaway_name
-            )
-        )
-
-        await interaction.response.send_message(
-            f"✅ Giveaway started in {interaction.channel.mention}!",
-            ephemeral=True
-        )
-
-
-async def safe_run_giveaway(bot, channel, message, emoji, duration_minutes, winners_count, prize):
-    try:
-        await run_giveaway(channel, message, emoji, duration_minutes, winners_count, prize)
-    except Exception as e:
-        logging.error(f"Exception in giveaway task: {e}")
-        try:
-            await channel.send(f"⚠️ Giveaway **{prize}** encountered an error and was stopped.")
-        except Exception:
-            pass
-
-
-async def run_giveaway(channel, message, emoji, duration_minutes, winners_count, prize):
-    await asyncio.sleep(duration_minutes * 60)
+async def end_giveaway(guild_id, giveaway_id, giveaway_data):
+    channel = bot.get_channel(giveaway_data["channel_id"])
+    if not channel:
+        logging.warning("Channel not found for ending giveaway")
+        return
 
     try:
-        message = await channel.fetch_message(message.id)
+        message = await channel.fetch_message(giveaway_data["message_id"])
     except discord.NotFound:
-        logging.warning("Giveaway message was deleted before ending giveaway.")
-        return
-    except HTTPException as e:
-        if e.status == 429:
-            logging.warning(f"Rate limited when fetching giveaway message: {e}")
-            await asyncio.sleep(5)
-            try:
-                message = await channel.fetch_message(message.id)
-            except Exception as e:
-                logging.error(f"Failed retrying to fetch message: {e}")
-                return
-        else:
-            logging.error(f"Failed to fetch giveaway message: {e}")
-            return
-
-    users = []
-    for reaction in message.reactions:
-        if str(reaction.emoji) == emoji:
-            try:
-                users = [user async for user in reaction.users() if not user.bot]
-            except HTTPException as e:
-                logging.error(f"Failed to fetch reaction users: {e}")
-                users = []
-            break
-
-    if len(users) < winners_count:
-        await channel.send(f"❌ Not enough participants for the giveaway **{prize}**!")
+        await channel.send(f"⚠️ Giveaway for **{giveaway_data['prize']}** ended but original message is gone.")
         return
 
-    winners = random.sample(users, winners_count)
-    winners_mentions = ", ".join(winner.mention for winner in winners)
-
-    await channel.send(
-        f"🎉 **GIVEAWAY ENDED!** 🎉\n\n"
-        f"**Prize:** {prize}\n"
-        f"**Winners:** {winners_mentions}\n"
-        f"Congratulations! 🎊"
-    )
-
-
-class GiveawaySetupView(discord.ui.View):
-    def __init__(self, bot, author_id):
-        super().__init__(timeout=300)
-        self.bot = bot
-        self.author_id = author_id
-
-    async def on_timeout(self):
-        for child in self.children:
-            child.disabled = True
-
-    @discord.ui.button(label="Setup Giveaway", style=discord.ButtonStyle.green)
-    async def setup_giveaway_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.author_id:
-            await interaction.response.send_message(
-                "❌ You are not allowed to use this button.",
-                ephemeral=True
-            )
-            return
-
-        await interaction.response.send_modal(GiveawaySetupModal(self.bot, self.author_id))
-
-
-# ---------- Slash command for giveaway ----------
-
-@bot.tree.command(name="giveaway", description="Start an interactive giveaway setup")
-@app_commands.checks.has_permissions(administrator=True)
-async def giveaway(interaction: discord.Interaction):
-    try:
-        view = GiveawaySetupView(bot, interaction.user.id)
-        await interaction.response.defer(ephemeral=True)
-        await interaction.followup.send(
-            f"{interaction.user.mention}, click below to set up your giveaway!",
-            view=view,
-            ephemeral=True
+    users = list(set(giveaway_data.get("entries", [])))
+    if len(users) < giveaway_data["winners_count"]:
+        await channel.send(f"❌ Giveaway for **{giveaway_data['prize']}** ended. Not enough participants.")
+    else:
+        winners = random.sample(users, giveaway_data["winners_count"])
+        mentions = " ".join(f"<@{uid}>" for uid in winners)
+        await channel.send(
+            f"🎉 **GIVEAWAY ENDED!** 🎉\n\nPrize: **{giveaway_data['prize']}**\nWinners: {mentions}\nCongratulations!"
         )
-    except HTTPException as e:
-        if e.status == 429:
-            logging.warning(f"Rate-limited on /giveaway command: {e}")
-            try:
-                await interaction.response.send_message(
-                    "❌ I got rate-limited by Discord! Please try again shortly.",
-                    ephemeral=True
-                )
-            except InteractionResponded:
-                await interaction.followup.send(
-                    "❌ I got rate-limited by Discord! Please try again shortly.",
-                    ephemeral=True
-                )
-        else:
-            logging.error(f"HTTPException in /giveaway command: {e}")
-            raise
+
+    giveaways = load_giveaways()
+    giveaways[guild_id][giveaway_id]["ended"] = True
+    save_giveaways(giveaways)
+
+@tasks.loop(seconds=30)
+async def giveaway_checker():
+    giveaways = load_giveaways()
+    changed = False
+    now = time.time()
+    for guild_id, guild_giveaways in giveaways.items():
+        for giveaway_id, giveaway in guild_giveaways.items():
+            if not giveaway.get("ended") and giveaway["ends_at"] <= now:
+                await end_giveaway(guild_id, giveaway_id, giveaway)
+                changed = True
+    if changed:
+        save_giveaways(giveaways)
+
+# Start the giveaway checker task when bot is ready
+@giveaway_checker.before_loop
+async def before_giveaway_checker():
+    await bot.wait_until_ready()
+
+giveaway_checker.start()
+
+
+@bot.tree.command(name="giveaway_start", description="Start a giveaway")
+@app_commands.describe(
+    prize="Prize for the giveaway",
+    duration_minutes="Duration in minutes",
+    winners_count="Number of winners"
+)
+@app_commands.checks.has_permissions(manage_messages=True)
+async def giveaway_start(interaction: discord.Interaction, prize: str, duration_minutes: int, winners_count: int):
+    await interaction.response.defer(ephemeral=True)
+    channel = interaction.channel
+
+    ends_at = time.time() + duration_minutes * 60
+
+    giveaways = load_giveaways()
+    guild_id = str(interaction.guild.id)
+    if guild_id not in giveaways:
+        giveaways[guild_id] = {}
+
+    giveaway_id = str(int(time.time()))
+    entry_message = await channel.send(
+        f"🎉 **GIVEAWAY STARTED!** 🎉\n\n"
+        f"**Prize:** {prize}\n"
+        f"**Ends in:** {duration_minutes} minutes\n"
+        f"**Number of winners:** {winners_count}\n\n"
+        f"React with 🎉 to enter!"
+    )
+    await entry_message.add_reaction("🎉")
+
+    giveaways[guild_id][giveaway_id] = {
+        "channel_id": channel.id,
+        "message_id": entry_message.id,
+        "prize": prize,
+        "ends_at": ends_at,
+        "winners_count": winners_count,
+        "entries": [],
+        "ended": False
+    }
+    save_giveaways(giveaways)
+
+    await interaction.followup.send(f"✅ Giveaway started in {channel.mention}!", ephemeral=True)
+
+@bot.tree.command(name="giveaway_cancel", description="Cancel a giveaway by ID")
+@app_commands.describe(giveaway_id="ID of the giveaway to cancel")
+@app_commands.checks.has_permissions(manage_messages=True)
+async def giveaway_cancel(interaction: discord.Interaction, giveaway_id: str):
+    giveaways = load_giveaways()
+    guild_id = str(interaction.guild.id)
+    if guild_id not in giveaways or giveaway_id not in giveaways[guild_id]:
+        await interaction.response.send_message("❌ Giveaway ID not found.", ephemeral=True)
+        return
+
+    giveaways[guild_id][giveaway_id]["ended"] = True
+    save_giveaways(giveaways)
+    await interaction.response.send_message("✅ Giveaway cancelled.", ephemeral=True)
+
+@bot.tree.command(name="giveaway_reroll", description="Reroll winners for a giveaway by ID")
+@app_commands.describe(giveaway_id="ID of the giveaway to reroll")
+@app_commands.checks.has_permissions(manage_messages=True)
+async def giveaway_reroll(interaction: discord.Interaction, giveaway_id: str):
+    giveaways = load_giveaways()
+    guild_id = str(interaction.guild.id)
+    if guild_id not in giveaways or giveaway_id not in giveaways[guild_id]:
+        await interaction.response.send_message("❌ Giveaway ID not found.", ephemeral=True)
+        return
+
+    giveaway = giveaways[guild_id][giveaway_id]
+    if not giveaway.get("entries"):
+        await interaction.response.send_message("❌ No participants to reroll.", ephemeral=True)
+        return
+
+    if giveaway["ended"]:
+        users = list(set(giveaway["entries"]))
+        if len(users) < giveaway["winners_count"]:
+            await interaction.response.send_message("❌ Not enough participants to reroll.", ephemeral=True)
+            return
+
+        winners = random.sample(users, giveaway["winners_count"])
+        mentions = " ".join(f"<@{uid}>" for uid in winners)
+        channel = bot.get_channel(giveaway["channel_id"])
+        await channel.send(
+            f"🎉 **GIVEAWAY REROLLED!** 🎉\n\nPrize: **{giveaway['prize']}**\nWinners: {mentions}\nCongratulations!"
+        )
+        await interaction.response.send_message("✅ Rerolled winners!", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ Giveaway is still running. Wait until it ends to reroll.", ephemeral=True)
+
+@bot.event
+async def on_raw_reaction_add(payload):
+    if payload.user_id == bot.user.id:
+        return
+    if str(payload.emoji) != "🎉":
+        return
+
+    giveaways = load_giveaways()
+    guild_id = str(payload.guild_id)
+    if guild_id not in giveaways:
+        return
+    for giveaway_id, giveaway in giveaways[guild_id].items():
+        if giveaway.get("ended"):
+            continue
+        if payload.message_id == giveaway["message_id"]:
+            if payload.user_id not in giveaway["entries"]:
+                giveaway["entries"].append(payload.user_id)
+                save_giveaways(giveaways)
+            break
 
 
 # ---------- Admin command to post ticket button ----------
@@ -330,7 +305,6 @@ async def setup_ticket(ctx):
 @commands.cooldown(rate=1, per=10, type=commands.BucketType.user)
 async def hello(ctx):
     await ctx.send(f'Hello, {ctx.author.name}!')
-
 
 @hello.error
 async def hello_error(ctx, error):
@@ -387,63 +361,54 @@ async def vouch(ctx: commands.Context):
         if mention_match:
             user_id = int(mention_match.group(1))
             user = ctx.guild.get_member(user_id)
-        elif target_input.isdigit():
-            # Try user ID lookup
-            user = ctx.guild.get_member(int(target_input))
-        elif "#" in target_input:
-            # Old username#discriminator format
-            name, discriminator = target_input.split("#", 1)
-            user = discord.utils.get(ctx.guild.members, name=name, discriminator=discriminator)
         else:
-            # Just username - find first matching member
-            user = discord.utils.find(lambda m: m.name == target_input, ctx.guild.members)
+            # Try ID
+            if target_input.isdigit():
+                user = ctx.guild.get_member(int(target_input))
+            # Try username#discriminator
+            elif "#" in target_input:
+                name, disc = target_input.split("#", 1)
+                user = discord.utils.get(ctx.guild.members, name=name, discriminator=disc)
+            else:
+                # Try username only (first match)
+                user = discord.utils.find(lambda m: m.name == target_input, ctx.guild.members)
 
         if not user:
-            await dm.send("❌ Could not find that user in this server. Please make sure you typed it correctly.")
+            await dm.send("❌ Could not find that user in this server. Vouch cancelled.")
             return
-        
         if user.id == ctx.author.id:
-            await dm.send("❌ You cannot vouch yourself.")
+            await dm.send("❌ You cannot vouch for yourself.")
             return
 
-        if add_vouch(user.id, ctx.author.id):
-            await dm.send(f"✅ You have successfully vouched for {user.display_name}.")
-            await ctx.channel.send(f"📢 {ctx.author.mention} has vouched for {user.mention}!")
+        added = add_vouch(user.id, ctx.author.id)
+        if added:
+            await dm.send(f"✅ You have successfully vouched for {user.mention}!")
         else:
-            await dm.send("❌ You have already vouched for this user.")
+            await dm.send(f"⚠️ You have already vouched for {user.mention} before.")
+
     except asyncio.TimeoutError:
-        await ctx.author.send("⌛ Vouch timed out. Please try again.")
-    except discord.Forbidden:
-        await ctx.send(f"{ctx.author.mention}, I couldn't DM you. Please enable your DMs and try again.")
+        await ctx.author.send("⌛ Vouch timed out. Please run the command again if you still want to vouch.")
 
-@bot.command(name="vouches")
-async def check_vouches(ctx, member: discord.Member = None):
-    member = member or ctx.author
-    count = vouch_counts.get(member.id, 0)
-    await ctx.send(f"📊 {member.display_name} has {count} vouch{'es' if count != 1 else ''}.")
+@bot.command()
+async def vouches(ctx, member: discord.Member = None):
+    """Check how many vouches a user has."""
+    target = member or ctx.author
+    count = vouch_counts.get(target.id, 0)
+    await ctx.send(f"{target.mention} has {count} vouches.")
 
 
-# ---------- Event to show when the bot is ready ----------
+# ---------- Bot Events ----------
+
 @bot.event
 async def on_ready():
-    logging.info(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")
+    print(f"Bot is ready. Logged in as {bot.user} (ID: {bot.user.id})")
     try:
         synced = await bot.tree.sync()
-        logging.info(f"✅ Synced {len(synced)} slash commands.")
+        print(f"Synced {len(synced)} commands")
     except Exception as e:
-        logging.error(f"❌ Failed to sync commands: {e}")
-    logging.info("Bot is ready.")
+        print(f"Failed to sync commands: {e}")
 
 
-# ---------- Actually run the bot ----------
-if __name__ == "__main__":
-    keep_alive()
+# ---------- Run Bot ----------
 
-    TOKEN = os.getenv("DISCORD_BOT_TOKEN") or os.getenv("TOKEN")
-    if not TOKEN:
-        logging.error("❌ No bot token found in environment variables! Please set DISCORD_BOT_TOKEN or TOKEN.")
-    else:
-        try:
-            bot.run(TOKEN)
-        except Exception as e:
-            logging.error(f"❌ Exception when running bot: {e}")
+bot.run(os.environ.get("DISCORD_BOT_TOKEN"))
