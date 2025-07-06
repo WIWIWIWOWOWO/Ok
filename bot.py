@@ -1,7 +1,7 @@
 import os
 import asyncio
-import time
 import random
+import time
 import logging
 from keep_alive import keep_alive
 
@@ -9,7 +9,6 @@ import discord
 from discord.ext import commands
 from discord import app_commands, HTTPException, InteractionResponded
 
-# Retry helper (optional, used for rate limit handling)
 async def discord_api_call_with_retry(coro_func, *args, max_retries=5, **kwargs):
     retry_delay = 1
     for attempt in range(max_retries):
@@ -25,18 +24,22 @@ async def discord_api_call_with_retry(coro_func, *args, max_retries=5, **kwargs)
             else:
                 raise
     raise Exception("Max retries exceeded due to rate limits")
+    
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)  # Change to INFO in production
 
-logging.basicConfig(level=logging.INFO)  # Change to DEBUG for more logs
-
+# Keep your bot alive (for hosting services like Replit)
 keep_alive()
 
+# Enable intents
 intents = discord.Intents.default()
 intents.message_content = True
 
+# Create bot instance
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 
-# -------- Ticket Button --------
+# ---------- Ticket Button ----------
 
 class TicketButtonView(discord.ui.View):
     def __init__(self, bot):
@@ -78,24 +81,255 @@ class TicketButtonView(discord.ui.View):
                 )
                 return
 
+        # Create webhook in the channel
+        webhook = None
+        try:
+            webhook = await channel.create_webhook(name=f"{user.name}-webhook")
+        except HTTPException as e:
+            logging.error(f"Error creating webhook: {e}")
+
+        # Try to DM the user the webhook URL
+        try:
+            if webhook:
+                await user.send(
+                    f"✅ Your private channel has been created: {channel.mention}\nWebhook URL: {webhook.url}"
+                )
+            else:
+                await user.send(
+                    f"✅ Your private channel has been created: {channel.mention}"
+                )
+        except discord.Forbidden:
+            # Fallback if user blocks DMs
+            if webhook:
+                await interaction.response.send_message(
+                    f"{user.mention} I couldn't DM you. Here's your private channel: {channel.mention}\nWebhook URL: {webhook.url}",
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    f"{user.mention} I couldn't DM you. Here's your private channel: {channel.mention}",
+                    ephemeral=True
+                )
+            return
+
         await interaction.response.send_message(
             f"✅ Created your private channel: {channel.mention}",
             ephemeral=True
         )
 
 
+# ---------- Giveaway Modal & View ----------
+
+class GiveawaySetupModal(discord.ui.Modal, title="Setup Giveaway"):
+    def __init__(self, bot, author_id):
+        super().__init__()
+        self.bot = bot
+        self.author_id = author_id
+
+        self.add_item(discord.ui.TextInput(
+            label="Giveaway Name",
+            placeholder="Example: Nitro Giveaway",
+            max_length=100
+        ))
+        self.add_item(discord.ui.TextInput(
+            label="Number of Winners",
+            placeholder="1",
+            max_length=2
+        ))
+        self.add_item(discord.ui.TextInput(
+            label="Duration (minutes)",
+            placeholder="e.g., 10",
+            max_length=4
+        ))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("You are not allowed to submit this modal.", ephemeral=True)
+            return
+
+        giveaway_name = self.children[0].value
+        winners_count = self.children[1].value
+        duration_minutes = self.children[2].value
+
+        try:
+            winners_count = int(winners_count)
+            duration_minutes = int(duration_minutes)
+        except ValueError:
+            await interaction.response.send_message(
+                "❌ Invalid number for winners or duration. Please use integers.",
+                ephemeral=True
+            )
+            return
+
+        try:
+            giveaway_message = await interaction.channel.send(
+                f"🎉 **GIVEAWAY STARTED!** 🎉\n\n"
+                f"**Prize:** {giveaway_name}\n"
+                f"**Winners:** {winners_count}\n"
+                f"**Duration:** {duration_minutes} minutes\n\n"
+                f"React with 🎉 to enter!"
+            )
+            await giveaway_message.add_reaction("🎉")
+        except HTTPException as e:
+            if e.status == 429:
+                logging.warning(f"Rate limited when starting giveaway: {e}")
+                await interaction.response.send_message(
+                    "❌ I am being rate limited by Discord. Please try again shortly.",
+                    ephemeral=True
+                )
+                return
+            logging.error(f"Failed to send giveaway message or add reaction: {e}")
+            await interaction.response.send_message(
+                "❌ Failed to start giveaway due to Discord API error.",
+                ephemeral=True
+            )
+            return
+
+        self.bot.loop.create_task(
+            safe_run_giveaway(
+                self.bot,
+                interaction.channel,
+                giveaway_message,
+                "🎉",
+                duration_minutes,
+                winners_count,
+                giveaway_name
+            )
+        )
+
+        await interaction.response.send_message(
+            f"✅ Giveaway started in {interaction.channel.mention}!",
+            ephemeral=True
+        )
+
+
+async def safe_run_giveaway(bot, channel, message, emoji, duration_minutes, winners_count, prize):
+    try:
+        await run_giveaway(channel, message, emoji, duration_minutes, winners_count, prize)
+    except Exception as e:
+        logging.error(f"Exception in giveaway task: {e}")
+        try:
+            await channel.send(f"⚠️ Giveaway **{prize}** encountered an error and was stopped.")
+        except Exception:
+            pass
+
+
+async def run_giveaway(channel, message, emoji, duration_minutes, winners_count, prize):
+    await asyncio.sleep(duration_minutes * 60)
+
+    try:
+        message = await channel.fetch_message(message.id)
+    except discord.NotFound:
+        logging.warning("Giveaway message was deleted before ending giveaway.")
+        return
+    except HTTPException as e:
+        if e.status == 429:
+            logging.warning(f"Rate limited when fetching giveaway message: {e}")
+            await asyncio.sleep(5)
+            try:
+                message = await channel.fetch_message(message.id)
+            except Exception as e:
+                logging.error(f"Failed retrying to fetch message: {e}")
+                return
+        else:
+            logging.error(f"Failed to fetch giveaway message: {e}")
+            return
+
+    users = []
+    for reaction in message.reactions:
+        if str(reaction.emoji) == emoji:
+            try:
+                users = [user async for user in reaction.users() if not user.bot]
+            except HTTPException as e:
+                logging.error(f"Failed to fetch reaction users: {e}")
+                users = []
+            break
+
+    if len(users) < winners_count:
+        await channel.send(f"❌ Not enough participants for the giveaway **{prize}**!")
+        return
+
+    winners = random.sample(users, winners_count)
+    winners_mentions = ", ".join(winner.mention for winner in winners)
+
+    await channel.send(
+        f"🎉 **GIVEAWAY ENDED!** 🎉\n\n"
+        f"**Prize:** {prize}\n"
+        f"**Winners:** {winners_mentions}\n"
+        f"Congratulations! 🎊"
+    )
+
+
+class GiveawaySetupView(discord.ui.View):
+    def __init__(self, bot, author_id):
+        super().__init__(timeout=300)
+        self.bot = bot
+        self.author_id = author_id
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+
+    @discord.ui.button(label="Setup Giveaway", style=discord.ButtonStyle.green)
+    async def setup_giveaway_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "❌ You are not allowed to use this button.",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.send_modal(GiveawaySetupModal(self.bot, self.author_id))
+
+
+# ---------- Slash command for giveaway ----------
+
+@bot.tree.command(name="giveaway", description="Start an interactive giveaway setup")
+@app_commands.checks.has_permissions(administrator=True)
+async def giveaway(interaction: discord.Interaction):
+    try:
+        view = GiveawaySetupView(bot, interaction.user.id)
+        await interaction.response.defer(ephemeral=True)
+        await interaction.followup.send(
+            f"{interaction.user.mention}, click below to set up your giveaway!",
+            view=view,
+            ephemeral=True
+        )
+    except HTTPException as e:
+        if e.status == 429:
+            logging.warning(f"Rate-limited on /giveaway command: {e}")
+            try:
+                await interaction.response.send_message(
+                    "❌ I got rate-limited by Discord! Please try again shortly.",
+                    ephemeral=True
+                )
+            except InteractionResponded:
+                await interaction.followup.send(
+                    "❌ I got rate-limited by Discord! Please try again shortly.",
+                    ephemeral=True
+                )
+        else:
+            logging.error(f"HTTPException in /giveaway command: {e}")
+            raise
+
+
+# ---------- Admin command to post ticket button ----------
+
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def setup_ticket(ctx):
-    """Admin command to post the ticket button."""
+    """Command for admins to post the ticket button message."""
     view = TicketButtonView(bot)
     await ctx.send("Click the button below to create your private channel:", view=view)
 
+
+# ---------- Simple hello command with cooldown ----------
 
 @bot.command()
 @commands.cooldown(rate=1, per=10, type=commands.BucketType.user)
 async def hello(ctx):
     await ctx.send(f'Hello, {ctx.author.name}!')
+
 
 @hello.error
 async def hello_error(ctx, error):
@@ -103,87 +337,7 @@ async def hello_error(ctx, error):
         await ctx.send(f"Please wait {round(error.retry_after, 1)} seconds before using this command again.")
 
 
-# -------- Giveaway Slash Command --------
-
-class Giveaway:
-    def __init__(self, bot, channel, message, prize, winners_count):
-        self.bot = bot
-        self.channel = channel
-        self.message = message
-        self.prize = prize
-        self.winners_count = winners_count
-
-    async def run(self, duration_minutes):
-        await asyncio.sleep(duration_minutes * 60)
-        try:
-            message = await self.channel.fetch_message(self.message.id)
-        except discord.NotFound:
-            logging.warning("Giveaway message deleted, cancelling giveaway.")
-            return
-        except HTTPException as e:
-            logging.error(f"Error fetching giveaway message: {e}")
-            return
-
-        reaction = None
-        for react in message.reactions:
-            if str(react.emoji) == "🎉":
-                reaction = react
-                break
-
-        if reaction is None:
-            await self.channel.send(f"❌ No 🎉 reaction found. Giveaway **{self.prize}** canceled.")
-            return
-
-        users = []
-        try:
-            users = [user async for user in reaction.users() if not user.bot]
-        except Exception as e:
-            logging.error(f"Error fetching users from reaction: {e}")
-
-        if len(users) == 0:
-            await self.channel.send(f"❌ No valid participants for giveaway **{self.prize}**!")
-            return
-
-        winners = random.sample(users, min(self.winners_count, len(users)))
-        winners_mentions = ", ".join(winner.mention for winner in winners)
-
-        await self.channel.send(
-            f"🎉 **GIVEAWAY ENDED!** 🎉\n\n"
-            f"**Prize:** {self.prize}\n"
-            f"**Winners:** {winners_mentions}\n"
-            f"Congratulations! 🎊"
-        )
-
-
-@bot.tree.command(name="giveaway", description="Start a giveaway (Admin only)")
-@app_commands.checks.has_permissions(administrator=True)
-@app_commands.describe(prize="Giveaway prize name", duration="Duration in minutes", winners="Number of winners")
-async def giveaway(interaction: discord.Interaction, prize: str, duration: int, winners: int):
-    await interaction.response.defer(ephemeral=True)
-    if duration <= 0 or winners <= 0:
-        await interaction.followup.send("❌ Duration and winners must be positive integers.", ephemeral=True)
-        return
-
-    try:
-        giveaway_msg = await interaction.channel.send(
-            f"🎉 **GIVEAWAY STARTED!** 🎉\n\n"
-            f"**Prize:** {prize}\n"
-            f"**Duration:** {duration} minutes\n"
-            f"**Number of winners:** {winners}\n\n"
-            f"React with 🎉 to enter!"
-        )
-        await giveaway_msg.add_reaction("🎉")
-    except HTTPException as e:
-        logging.error(f"Failed to send giveaway message: {e}")
-        await interaction.followup.send("❌ Failed to start giveaway due to an error.", ephemeral=True)
-        return
-
-    # Run the giveaway in background
-    giveaway_instance = Giveaway(bot, interaction.channel, giveaway_msg, prize, winners)
-    bot.loop.create_task(giveaway_instance.run(duration))
-
-    await interaction.followup.send(f"✅ Giveaway started for **{prize}**!", ephemeral=True)
-
+# ---------- Bot events ----------
 
 @bot.event
 async def on_ready():
@@ -196,21 +350,31 @@ async def on_ready():
     bot.add_view(TicketButtonView(bot))
 
 
+# ---------- Global app command error handler ----------
+
 @bot.tree.error
 async def on_app_command_error(interaction, error):
-    if isinstance(error, app_commands.errors.MissingPermissions):
-        await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
-    elif isinstance(error, app_commands.errors.CommandInvokeError):
+    if isinstance(error, app_commands.errors.CommandInvokeError):
         original = error.original
         if isinstance(original, HTTPException) and original.status == 429:
+            logging.warning(f"Rate-limited on app command: {original}")
             try:
-                await interaction.response.send_message("❌ Rate limited by Discord, try again later.", ephemeral=True)
+                await interaction.response.send_message(
+                    "❌ I was rate-limited by Discord. Please try again in a moment.",
+                    ephemeral=True
+                )
             except InteractionResponded:
-                await interaction.followup.send("❌ Rate limited by Discord, try again later.", ephemeral=True)
-        else:
-            logging.error(f"Unhandled error: {original}")
+                await interaction.followup.send(
+                    "❌ I was rate-limited by Discord. Please try again in a moment.",
+                    ephemeral=True
+                )
+            return
+        logging.error(f"Unhandled exception in app command: {original}")
     else:
-        logging.error(f"App command error: {error}")
+        logging.error(f"Error in app command: {error}")
+
+
+# ---------- Run bot ----------
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
