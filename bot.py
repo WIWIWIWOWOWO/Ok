@@ -397,16 +397,6 @@ async def vouches(ctx, member: discord.Member = None):
     await ctx.send(f"{target.mention} has {count} vouches.")
 
 
-# ---------- Bot Events ----------
-
-@bot.event
-async def on_ready():
-    print(f"Bot is ready. Logged in as {bot.user} (ID: {bot.user.id})")
-    try:
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} commands")
-    except Exception as e:
-        print(f"Failed to sync commands: {e}")
 
 
 # ---------- Actually run the bot ----------
@@ -421,3 +411,14 @@ if __name__ == "__main__":
             bot.run(TOKEN)
         except Exception as e:
             logging.error(f"❌ Exception when running bot: {e}")
+
+# ---------- Bot Events ----------
+
+@bot.event
+async def on_ready():
+    print(f"Bot is ready. Logged in as {bot.user} (ID: {bot.user.id})")
+    try:
+        synced = await bot.tree.sync()
+        print(f"Synced {len(synced)} commands")
+    except Exception as e:
+        print(f"Failed to sync commands: {e}")
