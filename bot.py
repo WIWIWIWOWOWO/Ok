@@ -3,11 +3,15 @@ import asyncio
 import random
 import time
 import logging
+import json
 from keep_alive import keep_alive
 
 import discord
 from discord.ext import commands
 from discord import app_commands, HTTPException, InteractionResponded
+
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)  # Change to INFO in production
 
 async def discord_api_call_with_retry(coro_func, *args, max_retries=5, **kwargs):
     retry_delay = 1
@@ -24,9 +28,6 @@ async def discord_api_call_with_retry(coro_func, *args, max_retries=5, **kwargs)
             else:
                 raise
     raise Exception("Max retries exceeded due to rate limits")
-    
-# Set up logging
-logging.basicConfig(level=logging.DEBUG)  # Change to INFO in production
 
 # Keep your bot alive (for hosting services like Replit)
 keep_alive()
@@ -34,6 +35,7 @@ keep_alive()
 # Enable intents
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True  # Needed to fetch members
 
 # Create bot instance
 bot = commands.Bot(command_prefix='!', intents=intents)
@@ -337,47 +339,72 @@ async def hello_error(ctx, error):
         await ctx.send(f"Please wait {round(error.retry_after, 1)} seconds before using this command again.")
 
 
-# ---------- Bot events ----------
+# ---------- Vouch System ----------
 
-@bot.event
-async def on_ready():
-    print(f'Logged in as {bot.user}!')
+# Global in-memory vouch storage
+vouch_counts = {}  # user_id: int
+vouches_given = {}  # giver_id: set of vouched user_ids
+
+def add_vouch(given_to_id: int, given_by_id: int) -> bool:
+    """Return True if vouch added, False if giver already vouched this user."""
+    if given_by_id not in vouches_given:
+        vouches_given[given_by_id] = set()
+    if given_to_id in vouches_given[given_by_id]:
+        return False  # already vouched this user
+    vouches_given[given_by_id].add(given_to_id)
+    vouch_counts[given_to_id] = vouch_counts.get(given_to_id, 0) + 1
+    return True
+
+@bot.command(name="vouch")
+async def vouch(ctx: commands.Context):
+    """Initiate a DM to vouch someone."""
     try:
-        synced = await bot.tree.sync()
-        print(f'Synced {len(synced)} command(s)')
-    except Exception as e:
-        print(f'Error syncing commands: {e}')
-    bot.add_view(TicketButtonView(bot))
+        dm = await ctx.author.create_dm()
+        await dm.send("Please reply with the username#discriminator of the person you want to vouch for.")
+        
+        def check(m):
+            return m.author == ctx.author and isinstance(m.channel, discord.DMChannel)
+        
+        msg = await bot.wait_for('message', check=check, timeout=120)
+        target_name = msg.content.strip()
 
-
-# ---------- Global app command error handler ----------
-
-@bot.tree.error
-async def on_app_command_error(interaction, error):
-    if isinstance(error, app_commands.errors.CommandInvokeError):
-        original = error.original
-        if isinstance(original, HTTPException) and original.status == 429:
-            logging.warning(f"Rate-limited on app command: {original}")
-            try:
-                await interaction.response.send_message(
-                    "❌ I was rate-limited by Discord. Please try again in a moment.",
-                    ephemeral=True
-                )
-            except InteractionResponded:
-                await interaction.followup.send(
-                    "❌ I was rate-limited by Discord. Please try again in a moment.",
-                    ephemeral=True
-                )
+        # Ensure we are in a guild context
+        if not ctx.guild:
+            await dm.send("❌ This command can only be used in a server.")
             return
-        logging.error(f"Unhandled exception in app command: {original}")
-    else:
-        logging.error(f"Error in app command: {error}")
+
+        if "#" not in target_name:
+            await dm.send("❌ Please provide the username in the format username#1234.")
+            return
+
+        name, discriminator = target_name.split("#", 1)
+
+        # Search member in guild
+        target_member = discord.utils.get(ctx.guild.members, name=name, discriminator=discriminator)
+        
+        if not target_member:
+            await dm.send("❌ Could not find that user in this server. Please make sure you typed it correctly.")
+            return
+        
+        if target_member.id == ctx.author.id:
+            await dm.send("❌ You cannot vouch yourself.")
+            return
+
+        if add_vouch(target_member.id, ctx.author.id):
+            await dm.send(f"✅ You have successfully vouched for {target_member.display_name}.")
+            await ctx.channel.send(f"📢 {ctx.author.mention} has vouched for {target_member.mention}!")
+        else:
+            await dm.send("❌ You have already vouched for this user.")
+    except asyncio.TimeoutError:
+        await ctx.author.send("⌛ Vouch timed out. Please try again.")
+    except discord.Forbidden:
+        await ctx.send(f"{ctx.author.mention}, I couldn't DM you. Please enable your DMs and try again.")
 
 
-# ---------- Run bot ----------
+# ---------- Run Bot ----------
 
-TOKEN = os.getenv("DISCORD_TOKEN")
+TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 if not TOKEN:
-    logging.error("DISCORD_TOKEN environment variable is not set!")
+    logging.error("No bot token found in environment variable DISCORD_BOT_TOKEN!")
 else:
     bot.run(TOKEN)
