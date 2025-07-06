@@ -401,9 +401,27 @@ async def vouch(ctx: commands.Context):
         await ctx.send(f"{ctx.author.mention}, I couldn't DM you. Please enable your DMs and try again.")
 
 
-# ---------- Run Bot ----------
-TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-if not TOKEN:
-    logging.error("No bot token found in environment variable DISCORD_BOT_TOKEN!")
-else:
-    bot.run(TOKEN)
+# ---------- Event to show when the bot is ready ----------
+@bot.event
+async def on_ready():
+    logging.info(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")
+    try:
+        synced = await bot.tree.sync()
+        logging.info(f"✅ Synced {len(synced)} slash commands.")
+    except Exception as e:
+        logging.error(f"❌ Failed to sync commands: {e}")
+    logging.info("Bot is ready.")
+
+
+# ---------- Actually run the bot ----------
+if __name__ == "__main__":
+    keep_alive()
+
+    TOKEN = os.getenv("DISCORD_BOT_TOKEN") or os.getenv("TOKEN")
+    if not TOKEN:
+        logging.error("❌ No bot token found in environment variables! Please set DISCORD_BOT_TOKEN or TOKEN.")
+    else:
+        try:
+            bot.run(TOKEN)
+        except Exception as e:
+            logging.error(f"❌ Exception when running bot: {e}")
