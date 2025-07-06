@@ -198,6 +198,32 @@ async def giveaway(interaction: discord.Interaction):
         ephemeral=True
     )
 
+@bot.command()
+async def test_giveaway(ctx):
+    """Test if the giveaway message is sent correctly."""
+    class DummyUser:
+        def __init__(self, name, id):
+            self.name = name
+            self.id = id
+            self.mention = f"<@{id}>"
+            self.bot = False
+
+    dummy_users = [
+        DummyUser("User1", 123),
+        DummyUser("User2", 456)
+    ]
+    winners_count = 1
+    prize = "Test Prize"
+
+    winners = random.sample(dummy_users, winners_count)
+    winners_mentions = ", ".join(winner.mention for winner in winners)
+
+    await ctx.send(
+        f"🎉 **GIVEAWAY ENDED!** 🎉\n\n"
+        f"**Prize:** {prize}\n"
+        f"**Winners:** {winners_mentions}\n"
+        f"Congratulations! 🎊"
+    )
 
 @bot.command()
 async def hello(ctx):
