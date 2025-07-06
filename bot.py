@@ -409,6 +409,15 @@ async def on_ready():
         print(f"Failed to sync commands: {e}")
 
 
-# ---------- Run Bot ----------
+# ---------- Actually run the bot ----------
+if __name__ == "__main__":
+    keep_alive()
 
-bot.run(os.environ.get("DISCORD_BOT_TOKEN"))
+    TOKEN = os.getenv("DISCORD_BOT_TOKEN") or os.getenv("TOKEN")
+    if not TOKEN:
+        logging.error("❌ No bot token found in environment variables! Please set DISCORD_BOT_TOKEN or TOKEN.")
+    else:
+        try:
+            bot.run(TOKEN)
+        except Exception as e:
+            logging.error(f"❌ Exception when running bot: {e}")
