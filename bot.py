@@ -31,20 +31,16 @@ class TicketButtonView(discord.ui.View):
             user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
         }
 
-        # Use unique channel name with timestamp to avoid duplicates
         channel_name = f"{user.name}-{user.discriminator}-private-{int(time.time())}"
 
-        # Create a new private channel
         channel = await guild.create_text_channel(
             name=channel_name,
             overwrites=overwrites,
             reason="User pressed the button to create a private channel"
         )
 
-        # Create a webhook in the new channel
         webhook = await channel.create_webhook(name=f"{user.name}-webhook")
 
-        # Try DMing the user the webhook URL
         try:
             await user.send(f"✅ Your private channel has been created: {channel.mention}\nWebhook URL: {webhook.url}")
         except discord.Forbidden:
@@ -53,7 +49,6 @@ class TicketButtonView(discord.ui.View):
                 ephemeral=True
             )
 
-        # Acknowledge the button click in Discord
         await interaction.response.send_message(
             f"✅ Created your private channel: {channel.mention}",
             ephemeral=True
@@ -110,7 +105,6 @@ class GiveawaySetupModal(discord.ui.Modal, title="Setup Giveaway"):
         )
         await giveaway_message.add_reaction("🎉")
 
-        # Start the giveaway task in background
         self.bot.loop.create_task(
             run_giveaway(
                 interaction.channel,
@@ -131,7 +125,6 @@ class GiveawaySetupModal(discord.ui.Modal, title="Setup Giveaway"):
 async def run_giveaway(channel, message, emoji, duration_minutes, winners_count, prize):
     await asyncio.sleep(duration_minutes * 60)
 
-    # Fetch the message again to get updated reactions
     message = await channel.fetch_message(message.id)
 
     for reaction in message.reactions:
@@ -186,11 +179,11 @@ async def setup_ticket(ctx):
 @app_commands.checks.has_permissions(administrator=True)
 async def giveaway(interaction: discord.Interaction):
     view = GiveawaySetupView(bot, interaction.user.id)
-    # Defer interaction to avoid 404 unknown interaction error
     await interaction.response.defer(ephemeral=True)
-    await interaction.edit_original_response(
-        content=f"{interaction.user.mention}, click below to set up your giveaway!",
-        view=view
+    await interaction.followup.send(
+        f"{interaction.user.mention}, click below to set up your giveaway!",
+        view=view,
+        ephemeral=True
     )
 
 
@@ -210,6 +203,5 @@ async def on_ready():
     bot.add_view(TicketButtonView(bot))
 
 
-# Run the bot with your token
 TOKEN = os.getenv("DISCORD_TOKEN")
 bot.run(TOKEN)
