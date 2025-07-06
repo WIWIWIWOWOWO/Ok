@@ -129,30 +129,25 @@ class GiveawaySetupModal(discord.ui.Modal, title="Setup Giveaway"):
 
 
 async def run_giveaway(channel, message, emoji, duration_minutes, winners_count, prize):
-    print(f"[DEBUG] Giveaway started for prize: '{prize}', duration: {duration_minutes} minutes, winners: {winners_count}")
     await asyncio.sleep(duration_minutes * 60)
-    print("[DEBUG] Giveaway duration ended, fetching message reactions...")
 
+    # Fetch the message again to get updated reactions
     message = await channel.fetch_message(message.id)
 
     for reaction in message.reactions:
         if str(reaction.emoji) == emoji:
-            users = await reaction.users().flatten()
+            users = [user async for user in reaction.users()]
             users = [user for user in users if not user.bot]
-            print(f"[DEBUG] Number of participants (excluding bots): {len(users)}")
             break
     else:
         users = []
-        print("[DEBUG] No reactions found with the giveaway emoji")
 
     if len(users) < winners_count:
         await channel.send(f"❌ Not enough participants for the giveaway **{prize}**!")
-        print("[DEBUG] Giveaway ended: Not enough participants")
         return
 
     winners = random.sample(users, winners_count)
     winners_mentions = ", ".join(winner.mention for winner in winners)
-    print(f"[DEBUG] Winners selected: {winners_mentions}")
 
     await channel.send(
         f"🎉 **GIVEAWAY ENDED!** 🎉\n\n"
@@ -198,32 +193,6 @@ async def giveaway(interaction: discord.Interaction):
         ephemeral=True
     )
 
-@bot.command()
-async def test_giveaway(ctx):
-    """Test if the giveaway message is sent correctly."""
-    class DummyUser:
-        def __init__(self, name, id):
-            self.name = name
-            self.id = id
-            self.mention = f"<@{id}>"
-            self.bot = False
-
-    dummy_users = [
-        DummyUser("User1", 123),
-        DummyUser("User2", 456)
-    ]
-    winners_count = 1
-    prize = "Test Prize"
-
-    winners = random.sample(dummy_users, winners_count)
-    winners_mentions = ", ".join(winner.mention for winner in winners)
-
-    await ctx.send(
-        f"🎉 **GIVEAWAY ENDED!** 🎉\n\n"
-        f"**Prize:** {prize}\n"
-        f"**Winners:** {winners_mentions}\n"
-        f"Congratulations! 🎊"
-    )
 
 @bot.command()
 async def hello(ctx):
