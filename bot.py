@@ -3,6 +3,7 @@ import asyncio
 import time
 import random
 import logging
+import json  # <-- Added
 from keep_alive import keep_alive
 
 import discord
@@ -23,7 +24,7 @@ intents.members = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# ---------- Retry Helper (optional) ----------
+# ---------- Retry Helper ----------
 async def discord_api_call_with_retry(coro_func, *args, max_retries=5, **kwargs):
     retry_delay = 1
     for attempt in range(max_retries):
@@ -86,14 +87,12 @@ class TicketButtonView(discord.ui.View):
             ephemeral=True
         )
 
-
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def setup_ticket(ctx):
     """Admin command to post the ticket button."""
     view = TicketButtonView(bot)
     await ctx.send("Click the button below to create your private channel:", view=view)
-
 
 # ---------- Hello Command ----------
 @bot.command()
@@ -105,7 +104,6 @@ async def hello(ctx):
 async def hello_error(ctx, error):
     if isinstance(error, commands.CommandOnCooldown):
         await ctx.send(f"Please wait {round(error.retry_after, 1)} seconds before using this command again.")
-
 
 # ---------- Giveaway Slash Command ----------
 class Giveaway:
@@ -157,7 +155,6 @@ class Giveaway:
             f"Congratulations! 🎊"
         )
 
-
 @bot.tree.command(name="giveaway", description="Start a giveaway (Admin only)")
 @app_commands.checks.has_permissions(administrator=True)
 @app_commands.describe(prize="Giveaway prize name", duration="Duration in minutes", winners="Number of winners")
@@ -186,10 +183,28 @@ async def giveaway(interaction: discord.Interaction, prize: str, duration: int, 
 
     await interaction.followup.send(f"✅ Giveaway started for **{prize}**!", ephemeral=True)
 
-
 # ---------- Vouch System ----------
+VOUCH_DATA_FILE = "vouch_data.json"
 vouch_counts = {}       # user_id -> int
 vouches_given = {}      # giver_id -> set of user_ids they've vouched
+
+def save_vouch_data():
+    with open(VOUCH_DATA_FILE, "w") as f:
+        json.dump({
+            "vouch_counts": vouch_counts,
+            "vouches_given": {k: list(v) for k, v in vouches_given.items()}
+        }, f)
+
+def load_vouch_data():
+    global vouch_counts, vouches_given
+    try:
+        with open(VOUCH_DATA_FILE, "r") as f:
+            data = json.load(f)
+            vouch_counts = {int(k): v for k, v in data.get("vouch_counts", {}).items()}
+            vouches_given = {int(k): set(v) for k, v in data.get("vouches_given", {}).items()}
+    except (FileNotFoundError, json.JSONDecodeError):
+        vouch_counts = {}
+        vouches_given = {}
 
 def add_vouch(given_to_id: int, given_by_id: int) -> bool:
     if given_by_id not in vouches_given:
@@ -198,6 +213,7 @@ def add_vouch(given_to_id: int, given_by_id: int) -> bool:
         return False
     vouches_given[given_by_id].add(given_to_id)
     vouch_counts[given_to_id] = vouch_counts.get(given_to_id, 0) + 1
+    save_vouch_data()
     return True
 
 @bot.command(name="vouch")
@@ -219,14 +235,12 @@ async def vouch(ctx: commands.Context):
 
         target_member = None
         if "#" in target_name:
-            # Old style with discriminator
             name, discriminator = target_name.split("#", 1)
             for member in ctx.guild.members:
                 if (member.name == name and member.discriminator == discriminator):
                     target_member = member
                     break
         else:
-            # New style
             target_member = discord.utils.find(
                 lambda m: (m.global_name and m.global_name.lower() == target_name.lower()) or
                           m.name.lower() == target_name.lower(),
@@ -234,7 +248,7 @@ async def vouch(ctx: commands.Context):
             )
 
         if not target_member:
-            await dm.send("❌ Could not find that user in this server. Please send the command again and make sure you spelled it correctly")
+            await dm.send("❌ Could not find that user in this server.")
             return
 
         if target_member.id == ctx.author.id:
@@ -250,6 +264,7 @@ async def vouch(ctx: commands.Context):
         await ctx.author.send("⌛ Vouch timed out. Please try again.")
     except discord.Forbidden:
         await ctx.send(f"{ctx.author.mention}, I couldn't DM you. Please enable your DMs and try again.")
+
 class VouchSelectView(discord.ui.View):
     def __init__(self, author: discord.User):
         super().__init__(timeout=60)
@@ -289,6 +304,7 @@ class VouchSelectView(discord.ui.View):
             content=f"✅ **{username}** has **{count}** vouches.",
             view=None
         )
+
 @bot.command(name="vouches")
 async def vouches(ctx: commands.Context):
     """Show a dropdown to see vouch counts."""
@@ -302,10 +318,10 @@ async def vouches(ctx: commands.Context):
         view=view
     )
 
-
 # ---------- Events ----------
 @bot.event
 async def on_ready():
+    load_vouch_data()
     print(f'Logged in as {bot.user}!')
     try:
         synced = await bot.tree.sync()
@@ -313,7 +329,6 @@ async def on_ready():
     except Exception as e:
         print(f'Error syncing commands: {e}')
     bot.add_view(TicketButtonView(bot))
-
 
 @bot.tree.error
 async def on_app_command_error(interaction, error):
@@ -330,7 +345,6 @@ async def on_app_command_error(interaction, error):
             logging.error(f"Unhandled error: {original}")
     else:
         logging.error(f"App command error: {error}")
-
 
 # ---------- Run ----------
 TOKEN = os.getenv("DISCORD_TOKEN")
