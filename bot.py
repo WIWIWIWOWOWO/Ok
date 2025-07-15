@@ -234,7 +234,7 @@ async def vouch(ctx: commands.Context):
             )
 
         if not target_member:
-            await dm.send("❌ Could not find that user in this server. Please make sure you typed it correctly.")
+            await dm.send("❌ Could not find that user in this server. Please send the command again and make sure you spelled it correctly")
             return
 
         if target_member.id == ctx.author.id:
