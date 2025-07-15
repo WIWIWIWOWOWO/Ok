@@ -8,6 +8,7 @@ from keep_alive import keep_alive
 import discord
 from discord.ext import commands
 from discord import app_commands, HTTPException, InteractionResponded
+from discord.ui import View, Select
 
 # ---------- Logging Setup ----------
 logging.basicConfig(level=logging.INFO)  # Change to DEBUG for more logs
@@ -249,6 +250,57 @@ async def vouch(ctx: commands.Context):
         await ctx.author.send("⌛ Vouch timed out. Please try again.")
     except discord.Forbidden:
         await ctx.send(f"{ctx.author.mention}, I couldn't DM you. Please enable your DMs and try again.")
+class VouchSelectView(discord.ui.View):
+    def __init__(self, author: discord.User):
+        super().__init__(timeout=60)
+        self.author = author
+
+        options = []
+        for user_id, count in vouch_counts.items():
+            label = f"ID: {user_id}"
+            user = bot.get_user(user_id)
+            if user:
+                label = user.name
+            options.append(discord.SelectOption(label=label, value=str(user_id), description=f"{count} vouches"))
+
+        if not options:
+            options.append(discord.SelectOption(label="No users yet!", value="none", description="No vouches recorded."))
+
+        self.select = discord.ui.Select(placeholder="Choose a user to see vouches", options=options)
+        self.select.callback = self.select_callback
+        self.add_item(self.select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author.id:
+            await interaction.response.send_message("❌ You can't use this menu.", ephemeral=True)
+            return
+
+        selected_id = self.select.values[0]
+        if selected_id == "none":
+            await interaction.response.send_message("No vouches recorded yet.", ephemeral=True)
+            return
+
+        user_id = int(selected_id)
+        count = vouch_counts.get(user_id, 0)
+        user = bot.get_user(user_id)
+        username = user.name if user else f"User ID {user_id}"
+
+        await interaction.response.edit_message(
+            content=f"✅ **{username}** has **{count}** vouches.",
+            view=None
+        )
+@bot.command(name="vouches")
+async def vouches(ctx: commands.Context):
+    """Show a dropdown to see vouch counts."""
+    if not vouch_counts:
+        await ctx.send("❌ No vouches have been recorded yet.")
+        return
+
+    view = VouchSelectView(ctx.author)
+    await ctx.send(
+        f"{ctx.author.mention}, choose a user to see their vouches:",
+        view=view
+    )
 
 
 # ---------- Events ----------
